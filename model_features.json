@@ -1,0 +1,23 @@
+[
+  "wavelet_mean",
+  "sample_entropy",
+  "shannon_entropy",
+  "rms",
+  "sample_entropy",
+  "shannon_entropy",
+  "rms",
+  "mean_rr",
+  "sdnn",
+  "rmssd",
+  "mean_hr",
+  "sample_entropy",
+  "shannon_entropy",
+  "rms",
+  "zero_crossing_rate",
+  "sample_entropy",
+  "shannon_entropy",
+  "rms",
+  "emg_activity",
+  "emg_mobility",
+  "emg_complexity"
+]
