@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List
 import joblib
@@ -12,6 +13,112 @@ app = FastAPI(
     description="API for predicting insomnia using physiological signals with explainable AI",
     version="1.0.0"
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # <- allowed origin(s)
+    allow_credentials=True,                   # allow cookies/auth if needed
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],                       # or list specific headers
+)
+
+with open('feature_statistics.json', 'r') as f:
+    feature_stats = json.load(f)
+
+
+# Model feature order from training time
+model_feature_order = [
+    "wavelet_mean",              # 0
+
+    "sample_entropy",            # 1 → eeg_sample_entropy
+    "shannon_entropy",           # 2 → eeg_shannon_entropy
+    "rms",                       # 3 → eeg_rms
+
+    "sample_entropy",            # 4 → ecg_sample_entropy
+    "shannon_entropy",           # 5 → ecg_shannon_entropy
+    "rms",                       # 6 → ecg_rms
+
+    "mean_rr",                   # 7
+    "sdnn",                      # 8
+    "rmssd",                     # 9
+    "mean_hr",                   # 10
+
+    "sample_entropy",            # 11 → eog_sample_entropy
+    "shannon_entropy",           # 12 → eog_shannon_entropy
+    "rms",                       # 13 → eog_rms
+    "zero_crossing_rate",        # 14
+
+    "sample_entropy",            # 15 → emg_sample_entropy
+    "shannon_entropy",           # 16 → emg_shannon_entropy
+    "rms",                       # 17 → emg_rms
+
+    "emg_activity",              # 18
+    "emg_mobility",              # 19
+    "emg_complexity"             # 20
+]
+
+frontend_to_model_index = {
+    "wavelet_mean": 0,
+
+    "eeg_sample_entropy": 1,
+    "eeg_shannon_entropy": 2,
+    "eeg_rms": 3,
+
+    "ecg_sample_entropy": 4,
+    "ecg_shannon_entropy": 5,
+    "ecg_rms": 6,
+
+    "mean_rr": 7,
+    "sdnn": 8,
+    "rmssd": 9,
+    "mean_hr": 10,
+
+    "eog_sample_entropy": 11,
+    "eog_shannon_entropy": 12,
+    "eog_rms": 13,
+    "zero_crossing_rate": 14,
+
+    "emg_sample_entropy": 15,
+    "emg_shannon_entropy": 16,
+    "emg_rms": 17,
+
+    "emg_activity": 18,
+    "emg_mobility": 19,
+    "emg_complexity": 20
+}
+
+
+
+
+feature_alias_map = {
+    "wavelet_mean": "wavelet_mean",
+
+    "eeg_sample_entropy": "sample_entropy",
+    "eeg_shannon_entropy": "shannon_entropy",
+    "eeg_rms": "rms",
+
+    "ecg_sample_entropy": "sample_entropy",
+    "ecg_shannon_entropy": "shannon_entropy",
+    "ecg_rms": "rms",
+
+    "mean_rr": "mean_rr",
+    "sdnn": "sdnn",
+    "rmssd": "rmssd",
+    "mean_hr": "mean_hr",
+
+    "eog_sample_entropy": "sample_entropy",
+    "eog_shannon_entropy": "shannon_entropy",
+    "eog_rms": "rms",
+    "zero_crossing_rate": "zero_crossing_rate",
+
+    "emg_sample_entropy": "sample_entropy",
+    "emg_shannon_entropy": "shannon_entropy",
+    "emg_rms": "rms",
+
+    "emg_activity": "emg_activity",
+    "emg_mobility": "emg_mobility",
+    "emg_complexity": "emg_complexity"
+}
 
 # Load the model, features, and statistics at startup
 try:
@@ -29,6 +136,39 @@ except Exception as e:
     feature_defaults = {}
 
 # Define the request model with all features as optional
+
+def generate_synthetic_training_data(stats, feature_order, n_samples=500):
+    synthetic = []
+
+    for _ in range(n_samples):
+        row = []
+
+        for feature in feature_order:
+
+            # Determine correct base feature for duplicates
+            base_feature = feature
+            if feature in ["sample_entropy", "shannon_entropy", "rms"]:
+                base_feature = feature  # direct match
+            # For duplicated names (EEG/ECG/EOG/EMG), LIME only needs distribution, so reuse same stats.
+            # e.g., eeg_sample_entropy -> sample_entropy
+            if "sample_entropy" in feature:
+                base_feature = "sample_entropy"
+            elif "shannon_entropy" in feature:
+                base_feature = "shannon_entropy"
+            elif feature.endswith("rms") or feature == "rms":
+                base_feature = "rms"
+
+            mean = stats["mean"].get(base_feature, 0)
+            std = stats["std"].get(base_feature, 0.001)  # small fallback
+
+            value = np.random.normal(mean, std)
+            row.append(value)
+
+        synthetic.append(row)
+
+    return np.array(synthetic)
+
+
 class PredictionRequest(BaseModel):
     wavelet_mean: Optional[float] = Field(None, description="EEG Wavelet Mean")
     eeg_sample_entropy: Optional[float] = Field(None, description="EEG Sample Entropy")
@@ -69,11 +209,11 @@ class PredictionResponse(BaseModel):
     probability_normal: float
     probability_insomnia: float
     confidence: float
-    explanation: Dict[str, List[Dict[str, float]]]
+    explanation: Dict[str, List[Dict[str, str | float]]]
     missing_features_filled: List[str]
 
 # Feature defaults will be loaded from feature_statistics.json
-feature_defaults = {}
+# feature_defaults = {}
 
 def fill_missing_features(input_data: dict, feature_list: list) -> tuple:
     """Fill missing features with median values from training data and track which were filled"""
@@ -96,97 +236,95 @@ def fill_missing_features(input_data: dict, feature_list: list) -> tuple:
     return filled_data, filled_features
 
 def generate_lime_explanation(model, input_df, feature_names, class_names=['Normal', 'Insomnia']):
-    """Generate LIME explanation for the prediction"""
     try:
-        # Create LIME explainer
         explainer = LimeTabularExplainer(
-            training_data=np.zeros((10, len(feature_names))),  # Dummy training data
+            training_data=synthetic_training_data,
             feature_names=feature_names,
             class_names=class_names,
             mode='classification'
         )
-        
-        # Get explanation for the instance
+
         exp = explainer.explain_instance(
-            data_row=input_df.values[0],
-            predict_fn=model.predict_proba,
+            data_row=input_df.iloc[0].values,
+            predict_fn=lambda x: model.predict_proba(pd.DataFrame(x, columns=feature_names)),
             num_features=len(feature_names)
         )
-        
-        # Format explanation
+
         explanation = {
-            'top_positive_features': [],
-            'top_negative_features': [],
-            'all_features': []
+            "top_positive_features": [],
+            "top_negative_features": [],
+            "all_features": []
         }
-        
-        # Get feature contributions
-        feature_weights = exp.as_list()
-        
-        for feature_desc, weight in feature_weights:
-            feature_info = {
-                'feature': feature_desc,
-                'weight': float(weight)
-            }
-            explanation['all_features'].append(feature_info)
-            
+
+        for feature_desc, weight in exp.as_list():
+            explanation["all_features"].append({
+                "feature": feature_desc,
+                "weight": float(weight)
+            })
+
             if weight > 0:
-                explanation['top_positive_features'].append(feature_info)
+                explanation["top_positive_features"].append({"feature": feature_desc, "weight": float(weight)})
             else:
-                explanation['top_negative_features'].append(feature_info)
-        
-        # Sort by absolute weight
-        explanation['top_positive_features'] = sorted(
-            explanation['top_positive_features'], 
-            key=lambda x: abs(x['weight']), 
-            reverse=True
+                explanation["top_negative_features"].append({"feature": feature_desc, "weight": float(weight)})
+
+        # sort and trim
+        explanation["top_positive_features"] = sorted(
+            explanation["top_positive_features"], key=lambda x: abs(x["weight"]), reverse=True
         )[:5]
-        
-        explanation['top_negative_features'] = sorted(
-            explanation['top_negative_features'], 
-            key=lambda x: abs(x['weight']), 
-            reverse=True
+
+        explanation["top_negative_features"] = sorted(
+            explanation["top_negative_features"], key=lambda x: abs(x["weight"]), reverse=True
         )[:5]
-        
+
         return explanation
-    
+
     except Exception as e:
-        print(f"Error generating LIME explanation: {e}")
-        return {
-            'error': str(e),
-            'top_positive_features': [],
-            'top_negative_features': [],
-            'all_features': []
-        }
+        print("LIME ERROR:", e)
+        return {"error": str(e)}
+
+
+synthetic_training_data = generate_synthetic_training_data(
+    feature_stats,
+    model_feature_order,
+    n_samples=500
+)
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_insomnia(request: PredictionRequest):
-    """
-    Predict insomnia from physiological signal features.
-    Missing features will be automatically filled with median values.
-    """
-    if model is None or required_features is None:
+
+    if model is None:
         raise HTTPException(status_code=500, detail="Model not loaded")
-    
+
     try:
-        # Convert request to dict
-        input_data = request.dict()
-        
-        # Fill missing features
-        filled_data, missing_features = fill_missing_features(input_data, required_features)
-        
-        # Create DataFrame with features in correct order
-        input_df = pd.DataFrame([filled_data])[required_features]
-        
-        # Make prediction
+        raw_data = request.model_dump()
+
+        # ---- BUILD MODEL INPUT ROW IN CORRECT TRAINING ORDER ----
+        row = [None] * len(model_feature_order)
+
+        for key, value in raw_data.items():
+            if value is not None and key in frontend_to_model_index:
+                idx = frontend_to_model_index[key]
+                row[idx] = value
+
+        # ---- FILL MISSING VALUES WITH MEDIANS ----
+        missing_features = []
+        for i in range(len(row)):
+            if row[i] is None:
+                feature_name = model_feature_order[i]
+                row[i] = feature_defaults.get(feature_name, 0.0)
+                missing_features.append(feature_name)
+
+        # ---- BUILD DATAFRAME IN EXACT TRAINING ORDER ----
+        input_df = pd.DataFrame([row], columns=model_feature_order)
+
+        # ---- MAKE PREDICTION ----
         prediction = model.predict(input_df)[0]
         probabilities = model.predict_proba(input_df)[0]
-        
-        # Generate LIME explanation
-        explanation = generate_lime_explanation(model, input_df, required_features)
-        
-        # Prepare response
-        response = PredictionResponse(
+
+        # ---- LIME SHOULD USE THE SAME FEATURE ORDER ----
+        explanation = generate_lime_explanation(model, input_df, model_feature_order)
+
+        return PredictionResponse(
             prediction=int(prediction),
             prediction_label="Insomnia" if prediction == 1 else "Normal",
             probability_normal=float(probabilities[0]),
@@ -195,11 +333,10 @@ async def predict_insomnia(request: PredictionRequest):
             explanation=explanation,
             missing_features_filled=missing_features
         )
-        
-        return response
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
 
 @app.get("/features")
 async def get_features():

@@ -1,22 +1,26 @@
 [
   "wavelet_mean",
-  "sample_entropy",
-  "shannon_entropy",
-  "rms",
-  "sample_entropy",
-  "shannon_entropy",
-  "rms",
+
+  "eeg_sample_entropy",
+  "eeg_shannon_entropy",
+  "eeg_rms",
+
+  "ecg_sample_entropy",
+  "ecg_shannon_entropy",
+  "ecg_rms",
   "mean_rr",
   "sdnn",
   "rmssd",
   "mean_hr",
-  "sample_entropy",
-  "shannon_entropy",
-  "rms",
+
+  "eog_sample_entropy",
+  "eog_shannon_entropy",
+  "eog_rms",
   "zero_crossing_rate",
-  "sample_entropy",
-  "shannon_entropy",
-  "rms",
+
+  "emg_sample_entropy",
+  "emg_shannon_entropy",
+  "emg_rms",
   "emg_activity",
   "emg_mobility",
   "emg_complexity"
